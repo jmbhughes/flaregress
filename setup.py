@@ -13,6 +13,7 @@ setup(
     description='Software to load solar flare data and predict their future lightcurves',
     long_description=open('README.md').read(),
     install_requires=["numpy",
-                      "pandas"],
-    test_suite="test"
+                      "pandas",
+                      "sunpy"],
+    test_suite="    test"
 )

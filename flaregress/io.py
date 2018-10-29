@@ -4,23 +4,158 @@ from datetime import datetime
 from collections import namedtuple
 import pandas as pd
 import os
+import sunpy.lightcurve
+from sunpy.time import TimeRange
+from datetime import timedelta
 
 
 class DataRetriever(ABC):
-    def __init__(self):
-        pass
+    """
+    A generic interface to retrieve data
+    """
+    def __init__(self, database_path=None, save_directory=None):
+        """
+        Create a data retriever
+        :param database_path: where the CSV database indicating where previously fetched files is stored
+        :param save_directory: where all the files that are fetched for the first time should be saved
+        """
+        self.database_path = os.path.expandvars(os.path.expanduser(database_path))  # remove unix special characters
+
+        # handle the database
+        if database_path:  # if a database has been specified
+            if os.path.isfile(self.database_path):  # check if it exists and if so open it
+                self.database = pd.read_csv(self.database_path, parse_dates=['start_time', 'end_time'])
+            elif os.path.isdir(os.path.dirname(self.database_path)):
+                # if it doesn't exist try to create it in the directory it was expected
+                self.database = pd.DataFrame({"start_time": [], "end_time": [], "filename": []})
+            else:  # the database directory does not even exist
+                msg = "Requested database that does not exist"
+                msg += "Could not create since {} is not valid directory".format(os.path.dirname(self.database_path))
+                raise NotADirectoryError(msg)
+        else:  # no database has been specified so don't even bother
+            self.database = None
+
+        # make sure the save directory is valid
+        if save_directory:
+            if not os.path.isdir(save_directory):
+                raise NotADirectoryError("Passed non-existent save directory: {}".format(save_directory))
+        self.save_directory = save_directory
 
     @abstractmethod
     def retrieve(self, start_time, end_time):
+        """
+        Fetch all data between start and end times of this time
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :return: data as panda
+        :rtype: pd.DataFrame
+        """
         pass
+
+    @abstractmethod
+    def get_from_file(self, start_time, end_time):
+        """
+        Load the file from a local file specified in the database
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :return: data if it exists, otherwise None
+        :rtype: None or pd.DataFrame
+        """
+        pass
+
+    def find_file(self, start_time, end_time):
+        """
+        Search the database to see if a correct example exists
+        :param start_time: initial request time
+        :type start_time: datetime
+        :param end_time: final request time
+        :type end_time: datetime
+        :return: filename if it exists, otherwise None
+        :rtype: str or None
+        """
+        candidates = self.database[(self.database.start_time <= start_time) & (self.database.end_time >= end_time)]
+        if candidates.shape[0] > 0:  # found a candidate
+            fn = candidates.iloc[0].filename
+            return fn
+        return None
+
+    def close(self):
+        """
+        Close the retriever and update the database
+        """
+        if self.database is not None:
+            self.database.to_csv(self.database_path, index=False)
 
 
 class GOESXrayRetriever(DataRetriever):
-    def __init__(self):
-        DataRetriever.__init__(self)
+    """
+    Retreive GOES XRS light curves using Sunpy
+    """
+    def __init__(self, database_path=None, save_directory=None):
+        """
+        Create a data retriever
+        :param database_path: where the CSV database indicating where previously fetched files is stored
+        :param save_directory: where all the files that are fetched for the first time should be saved
+        """
+        DataRetriever.__init__(self, database_path, save_directory)
 
-    def retrieve(self, start_time, end_time):
-        pass
+    def retrieve(self, start_time, end_time, start_delta=15, end_delta=15):
+        """
+        Fetch all data between start and end times of this time
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :param start_delta: how many minutes prior to the start time to fetch
+        :type start_delta: int
+        :param end_delta: how many minutes after the end time to fetch
+        :type end_delta: int
+        :return: data as panda
+        :rtype: pd.DataFrame
+        """
+
+        # attempt to fetch it locally
+        prestart_time = start_time - timedelta(minutes=start_delta)
+        postend_time = end_time + timedelta(minutes=end_delta)
+        curve = self.get_from_file(prestart_time, postend_time)
+        if curve is None:  # if the local fetch failed, fetch from internet
+            times = TimeRange(prestart_time, postend_time)
+            curve = sunpy.lightcurve.GOESLightCurve.create(times).data
+            if self.save_directory:  # if saving files
+                save_name = os.path.join(self.save_directory, "goesxrs_{}_{}.csv".format(int(prestart_time.timestamp()),
+                                                                                         int(postend_time.timestamp())))
+                curve.to_csv(save_name)  # save as a CSV and update the database
+                self.database = self.database.append({"start_time": prestart_time,
+                                                      "end_time": postend_time,
+                                                      "filename": save_name}, ignore_index=True)
+        return curve
+
+    def get_from_file(self, start_time, end_time):
+        """
+        Load the file from a local file specified in the database
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :return: data if it exists, otherwise None
+        :rtype: None or pd.DataFrame
+        """
+        if self.database is not None:  # a database exists
+            fn = self.find_file(start_time, end_time)  # a valid file in the time window exists
+            if fn and os.path.isfile(fn):  # the file wasn't misplaced
+                curve = pd.read_csv(fn, index_col=0)
+                return curve
+            else:  # the file was misplaced so remove it from the database
+                candidates = self.database[(self.database.start_time <= start_time) &
+                                           (self.database.end_time >= end_time)]
+                self.database.drop(candidates.iloc[0].name)
+                return None
+        else:  # no database exists
+            return None
 
 
 class ListHandler(ABC):
@@ -33,19 +168,46 @@ class ListHandler(ABC):
 
     @abstractmethod
     def load(self, path):
+        """
+        Loads a list from a local location
+        :param path: where file is locally stored
+        :type path: str
+        :return: loaded list
+        :rtype: pd.DataFrame
+        """
         pass
 
     @abstractmethod
     def fetch(self):
+        """
+        Fetch a list for the first time from the internet
+        :return: loaded list
+        :rtype: pd.DataFrame
+        """
         pass
 
     @abstractmethod
     def save(self, path):
+        """
+        Saves a list locally for quicker access
+        :param path: where to save
+        :type path: str
+        """
         pass
 
 
-class RhessiListHandler(ListHandler):
+class RHESSIListHandler(ListHandler):
+    """
+    Fetches and loads the RHESSI flare catalog.
+    Able to save it locally and reopen from there in the future.
+    """
+
     def __init__(self, url="https://hesperia.gsfc.nasa.gov/hessidata/dbase/hessi_flare_list.txt"):
+        """
+        Create a handler
+        :param url: the url for the flare catalog if need to fetch it for the first time
+        :type url: str
+        """
         ListHandler.__init__(self, url)
 
     def fetch(self):
@@ -133,7 +295,7 @@ class RhessiListHandler(ListHandler):
         :param path: where to save
         :type path: str
         """
-        if self.contents is not None:
-            pd.to_csv(path, index=False)
+        if self.contents:
+            self.contents.to_csv(path, index=False)
         else:
             raise RuntimeError("A list must be fetched or loaded before saving")
