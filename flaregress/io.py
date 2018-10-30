@@ -7,6 +7,7 @@ import os
 import sunpy.lightcurve
 from sunpy.time import TimeRange
 from datetime import timedelta
+from sunpy.instr.goes import get_goes_event_list
 
 
 class DataRetriever(ABC):
@@ -91,6 +92,69 @@ class DataRetriever(ABC):
             self.database.to_csv(self.database_path, index=False)
 
 
+class LASPf107(DataRetriever):
+    def __init__(self, database_path=None, save_directory=None):
+        DataRetriever.__init__(self, database_path, save_directory)
+        raise NotImplementedError()
+
+    def retrieve(self, start_time, end_time):
+        """
+        Fetch all data between start and end times of this time
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :return: data as panda
+        :rtype: pd.DataFrame
+        """
+        curve = self.get_from_file(start_time, end_time)
+        if curve is None:
+            start_str = start_time.strftime("%Y-%m-%dT%H:%M")
+            end_str = end_time.strftime("%Y-%m-%dT%H:%M")
+            url = "http://lasp.colorado.edu/lisird/latis/"
+            url += "noaa_radio_flux.csv?time>={}&time<={}".format(start_str, end_str)
+
+            with urllib.request.urlopen(url) as response:
+                curve = pd.read_csv(response, index_col=[0], parse_dates=[0])
+                curve = curve.rename(index=str, columns={'f107 (solar flux unit (SFU))':'f107'})
+                del curve.index.name
+
+                if self.save_directory:  # if saving files
+                    save_name = os.path.join(self.save_directory,
+                                             "laspf107_{}_{}.csv".format(int(start_time.timestamp()),
+                                                                         int(end_time.timestamp())))
+                    curve.to_csv(save_name)  # save as a CSV and update the database
+                    self.database = self.database.append({"start_time": start_time,
+                                                          "end_time": end_time,
+                                                          "filename": save_name}, ignore_index=True)
+        return curve
+
+    def get_from_file(self, start_time, end_time):
+        """
+        Load the file from a local file specified in the database
+        :param start_time: initial request time
+        :type start_time: datetime.datetime
+        :param end_time: final request time
+        :type end_time: datetime.datetime
+        :return: data if it exists, otherwise None
+        :rtype: None or pd.DataFrame
+        """
+        if self.database is not None:  # a database exists
+            fn = self.find_file(start_time, end_time)  # a valid file in the time window exists
+            if fn and os.path.isfile(fn):  # the file wasn't misplaced
+                curve = pd.read_csv(fn, index_col=0, parse_dates=[0])
+                return curve
+            elif fn:  # the file was misplaced so remove it from the database
+                candidates = self.database[(self.database.start_time <= start_time) &
+                                           (self.database.end_time >= end_time)]
+                self.database.drop(candidates.iloc[0].name)
+                return None
+            else:  # no file ever existed
+                return None
+        else:  # no database exists
+            return None
+
+
 class GOESXrayRetriever(DataRetriever):
     """
     Retreive GOES XRS light curves using Sunpy
@@ -103,34 +167,28 @@ class GOESXrayRetriever(DataRetriever):
         """
         DataRetriever.__init__(self, database_path, save_directory)
 
-    def retrieve(self, start_time, end_time, start_delta=15, end_delta=15):
+    def retrieve(self, start_time, end_time):
         """
         Fetch all data between start and end times of this time
         :param start_time: initial request time
         :type start_time: datetime.datetime
         :param end_time: final request time
         :type end_time: datetime.datetime
-        :param start_delta: how many minutes prior to the start time to fetch
-        :type start_delta: int
-        :param end_delta: how many minutes after the end time to fetch
-        :type end_delta: int
         :return: data as panda
         :rtype: pd.DataFrame
         """
 
         # attempt to fetch it locally
-        prestart_time = start_time - timedelta(minutes=start_delta)
-        postend_time = end_time + timedelta(minutes=end_delta)
-        curve = self.get_from_file(prestart_time, postend_time)
+        curve = self.get_from_file(start_time, end_time)
         if curve is None:  # if the local fetch failed, fetch from internet
-            times = TimeRange(prestart_time, postend_time)
+            times = TimeRange(start_time, end_time)
             curve = sunpy.lightcurve.GOESLightCurve.create(times).data
             if self.save_directory:  # if saving files
-                save_name = os.path.join(self.save_directory, "goesxrs_{}_{}.csv".format(int(prestart_time.timestamp()),
-                                                                                         int(postend_time.timestamp())))
+                save_name = os.path.join(self.save_directory, "goesxrs_{}_{}.csv".format(int(start_time.timestamp()),
+                                                                                         int(end_time.timestamp())))
                 curve.to_csv(save_name)  # save as a CSV and update the database
-                self.database = self.database.append({"start_time": prestart_time,
-                                                      "end_time": postend_time,
+                self.database = self.database.append({"start_time": start_time,
+                                                      "end_time": end_time,
                                                       "filename": save_name}, ignore_index=True)
         return curve
 
@@ -147,12 +205,14 @@ class GOESXrayRetriever(DataRetriever):
         if self.database is not None:  # a database exists
             fn = self.find_file(start_time, end_time)  # a valid file in the time window exists
             if fn and os.path.isfile(fn):  # the file wasn't misplaced
-                curve = pd.read_csv(fn, index_col=0)
+                curve = pd.read_csv(fn, index_col=0, parse_dates=[0])
                 return curve
-            else:  # the file was misplaced so remove it from the database
+            elif fn:  # the file was misplaced so remove it from the database
                 candidates = self.database[(self.database.start_time <= start_time) &
                                            (self.database.end_time >= end_time)]
                 self.database.drop(candidates.iloc[0].name)
+                return None
+            else:  # no file ever existed
                 return None
         else:  # no database exists
             return None
@@ -194,6 +254,57 @@ class ListHandler(ABC):
         :type path: str
         """
         pass
+
+
+class GOESListHandler(ListHandler):
+
+    def __init__(self):
+        ListHandler.__init__(self, None)
+        pass
+
+    def load(self, path):
+        """
+        Loads a saved list from drive
+        :param path: location of list
+        :type path: str
+        :return: loaded list
+        :rtype: pd.DataFrame
+        """
+        if os.path.isfile(path):
+            self.contents = pd.read_csv(path, parse_dates=['time_start', 'time_peak', 'time_end'])
+            return self.contents
+        else:
+            raise FileNotFoundError("{} was not found".format(path))
+
+    def fetch(self, start_time=None, end_time=None):
+        if start_time is None:
+            start_time = "1975-01-01"
+
+        if end_time is None:
+            end_time = datetime.now().strftime("%Y-%m-%d")
+
+        df = pd.DataFrame(get_goes_event_list(TimeRange(start_time, end_time)))
+        df = df.rename(index=str, columns={"start_time": "time_start",
+                                           "end_time": "time_end",
+                                           "peak_time": "time_peak",
+                                           "noaa_active_region": "ar"})
+        df = df.drop(['event_date'], axis=1)
+        df['pos_x'] = [e[0] for e in df['goes_location']]
+        df['pos_y'] = [e[1] for e in df['goes_location']]
+        df = df.drop(['goes_location'], axis=1)
+        self.contents = df
+        return df
+
+    def save(self, path):
+        """
+        Saves a list to file
+        :param path: where to save
+        :type path: str
+        """
+        if self.contents is not None:
+            self.contents.to_csv(path, index=False)
+        else:
+            raise RuntimeError("A list must be fetched or loaded before saving")
 
 
 class RHESSIListHandler(ListHandler):
@@ -295,7 +406,7 @@ class RHESSIListHandler(ListHandler):
         :param path: where to save
         :type path: str
         """
-        if self.contents:
+        if self.contents is not None:
             self.contents.to_csv(path, index=False)
         else:
             raise RuntimeError("A list must be fetched or loaded before saving")
