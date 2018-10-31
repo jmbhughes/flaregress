@@ -15,5 +15,5 @@ setup(
     install_requires=["numpy",
                       "pandas",
                       "sunpy"],
-    test_suite="    test"
+    test_suite="tests"
 )
