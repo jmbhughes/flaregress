@@ -8,7 +8,8 @@ import sunpy.lightcurve
 from sunpy.time import TimeRange
 from datetime import timedelta
 from sunpy.instr.goes import get_goes_event_list
-
+import math
+from multiprocessing import Pool
 
 class DataRetriever(ABC):
     """
@@ -276,23 +277,68 @@ class GOESListHandler(ListHandler):
         else:
             raise FileNotFoundError("{} was not found".format(path))
 
-    def fetch(self, start_time=None, end_time=None):
+    def fetch(self, start_time=None, end_time=None, threaded=True):
+        """
+        Get the list
+        :param start_time: when the list begins
+        :type start_time: datetime
+        :param end_time: when the list ends
+        :type end_time: datetime
+        :param threaded: whether to multithread the request
+        :type threaded: bool
+        :return: a complete list of flares between start_time and end_time
+        :rtype: pd.DataFrame
+        """
+        # set the default start and end times
         if start_time is None:
-            start_time = "1975-01-01"
+            start_time = datetime(1975, 1, 1)
 
         if end_time is None:
-            end_time = datetime.now().strftime("%Y-%m-%d")
+            end_time = datetime.now()
 
-        df = pd.DataFrame(get_goes_event_list(TimeRange(start_time, end_time)))
-        df = df.rename(index=str, columns={"start_time": "time_start",
-                                           "end_time": "time_end",
-                                           "peak_time": "time_peak",
-                                           "noaa_active_region": "ar"})
-        df = df.drop(['event_date'], axis=1)
-        df['pos_x'] = [e[0] for e in df['goes_location']]
-        df['pos_y'] = [e[1] for e in df['goes_location']]
-        df = df.drop(['goes_location'], axis=1)
+        # if the request is for more than a month chunk it up into month sized requests and combine
+        if (end_time - start_time) > timedelta(days=30):
+            num_steps = math.ceil((end_time-start_time) / timedelta(days=30))
+            intervals = [(start_time + i*timedelta(days=30),
+                          start_time + (i+1)*timedelta(days=30)) for i in range(0, num_steps)]
+            intervals[-1] = (start_time + (num_steps - 1) * timedelta(days=30), end_time)
+
+            # if threading is requested
+            if threaded:
+                pool = Pool()
+                frames = pool.starmap(self._fetch, intervals)
+            else:  # no threading
+                frames = [self._fetch(*interval) for interval in intervals]
+            df = pd.concat(frames).reset_index(drop=True)  # drop the prior index and just use the new one
+        else:  # request was for less than a month so just ask for it all
+            df = self._fetch(start_time, end_time)
         self.contents = df
+        return df
+
+    @staticmethod
+    def _fetch(start_time, end_time):
+        """
+        A helpher method of fetch to actually perform an individual request
+        :param start_time: when list begins
+        :type start_time: datetime
+        :param end_time: when list ends
+        :type end_time: datetime
+        :return: list of flares between start_time and end_time
+        :rtype: pd.DataFrame
+        """
+        response = get_goes_event_list(TimeRange(start_time, end_time))
+        if response == []:  # no events were found
+            df = pd.DataFrame(columns=['time_start', 'time_end', 'time_peak', 'ar', 'pos_x', 'pos_y'])
+        else:
+            df = pd.DataFrame(response)
+            df = df.rename(index=str, columns={"start_time": "time_start",
+                                               "end_time": "time_end",
+                                               "peak_time": "time_peak",
+                                               "noaa_active_region": "ar"})
+            df = df.drop(['event_date'], axis=1)
+            df['pos_x'] = [e[0] for e in df['goes_location']]
+            df['pos_y'] = [e[1] for e in df['goes_location']]
+            df = df.drop(['goes_location'], axis=1)
         return df
 
     def save(self, path):
