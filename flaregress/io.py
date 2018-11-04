@@ -11,6 +11,7 @@ from sunpy.instr.goes import get_goes_event_list
 import math
 from multiprocessing import Pool
 
+
 class DataRetriever(ABC):
     """
     A generic interface to retrieve data

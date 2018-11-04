@@ -14,6 +14,7 @@ setup(
     long_description=open('README.md').read(),
     install_requires=["numpy",
                       "pandas",
-                      "sunpy"],
+                      "sunpy",
+                      "scikit-learn"],
     test_suite="tests"
 )
