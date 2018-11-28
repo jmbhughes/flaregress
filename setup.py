@@ -15,6 +15,7 @@ setup(
     install_requires=["numpy",
                       "pandas",
                       "sunpy",
-                      "scikit-learn"],
+                      "scikit-learn",
+                      "deepdish"],
     test_suite="tests"
 )

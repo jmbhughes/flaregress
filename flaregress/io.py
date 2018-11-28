@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 import urllib.request
 from datetime import datetime
 from collections import namedtuple
-import pandas as pd
 import os
 import sunpy.lightcurve
 from sunpy.time import TimeRange
@@ -10,38 +9,57 @@ from datetime import timedelta
 from sunpy.instr.goes import get_goes_event_list
 import math
 from multiprocessing import Pool
+import pandas as pd
+import deepdish as dd
+
+
+class DatabaseHandler:
+    """
+    Handles fetching all data and saving it for future usage
+    """
+    def __init__(self):
+        self.entries = []
+
+    def build(self, flare_list, retrievers):
+        for index, event in flare_list.iterrows():
+            self.entries.append({retriever.name: retriever.retrieve(event.time_start, event.time_end)
+                                 for retriever in retrievers})
+            self.entries[-1]['meta'] = event
+
+    def save(self, path):
+        dd.io.save(path, self.entries)
+
+    def load(self, path):
+        self.entries = dd.io.load(path)
 
 
 class DataRetriever(ABC):
     """
     A generic interface to retrieve data
     """
-    def __init__(self, database_path=None, save_directory=None):
+    def __init__(self, database_path, save_directory):
         """
         Create a data retriever
         :param database_path: where the CSV database indicating where previously fetched files is stored
         :param save_directory: where all the files that are fetched for the first time should be saved
         """
-        self.database_path = os.path.expandvars(os.path.expanduser(database_path))  # remove unix special characters
+        self.name = None
 
         # handle the database
-        if database_path:  # if a database has been specified
-            if os.path.isfile(self.database_path):  # check if it exists and if so open it
-                self.database = pd.read_csv(self.database_path, parse_dates=['start_time', 'end_time'])
-            elif os.path.isdir(os.path.dirname(self.database_path)):
-                # if it doesn't exist try to create it in the directory it was expected
-                self.database = pd.DataFrame({"start_time": [], "end_time": [], "filename": []})
-            else:  # the database directory does not even exist
-                msg = "Requested database that does not exist"
-                msg += "Could not create since {} is not valid directory".format(os.path.dirname(self.database_path))
-                raise NotADirectoryError(msg)
-        else:  # no database has been specified so don't even bother
-            self.database = None
+        self.database_path = os.path.expandvars(os.path.expanduser(database_path))  # remove unix special characters
+        if os.path.isfile(self.database_path):  # check if it exists and if so open it
+            self.database = pd.read_csv(self.database_path, parse_dates=['start_time', 'end_time'])
+        elif os.path.isdir(os.path.dirname(self.database_path)):
+            # if it doesn't exist try to create it in the directory it was expected
+            self.database = pd.DataFrame({"start_time": [], "end_time": [], "filename": []})
+        else:  # the database directory does not even exist
+            msg = "Requested database that does not exist"
+            msg += "Could not create since {} is not valid directory".format(os.path.dirname(self.database_path))
+            raise NotADirectoryError(msg)
 
         # make sure the save directory is valid
-        if save_directory:
-            if not os.path.isdir(save_directory):
-                raise NotADirectoryError("Passed non-existent save directory: {}".format(save_directory))
+        if not os.path.isdir(save_directory):
+            raise NotADirectoryError("Passed non-existent save directory: {}".format(save_directory))
         self.save_directory = save_directory
 
     @abstractmethod
@@ -94,10 +112,14 @@ class DataRetriever(ABC):
             self.database.to_csv(self.database_path, index=False)
 
 
-class LASPf107(DataRetriever):
+class LASPf107Retriever(DataRetriever):
+    """
+    Retrieves the 10.7 cm data from LASP
+    http://lasp.colorado.edu/lisird/data/noaa_radio_flux/
+    """
     def __init__(self, database_path=None, save_directory=None):
         DataRetriever.__init__(self, database_path, save_directory)
-        raise NotImplementedError()
+        self.name = 'f107'
 
     def retrieve(self, start_time, end_time):
         """
@@ -109,6 +131,12 @@ class LASPf107(DataRetriever):
         :return: data as panda
         :rtype: pd.DataFrame
         """
+
+        # only one sample per day so make sure the times span a day
+        if (end_time - start_time).total_seconds() < (24 * 60 * 60) - 1:
+            start_time = datetime(start_time.year, start_time.month, start_time.day)
+            end_time = datetime(end_time.year, end_time.month, end_time.day, 23, 59, 59)
+
         curve = self.get_from_file(start_time, end_time)
         if curve is None:
             start_str = start_time.strftime("%Y-%m-%dT%H:%M")
@@ -159,7 +187,7 @@ class LASPf107(DataRetriever):
 
 class GOESXrayRetriever(DataRetriever):
     """
-    Retreive GOES XRS light curves using Sunpy
+    Retrieve GOES XRS light curves using Sunpy
     """
     def __init__(self, database_path=None, save_directory=None):
         """
@@ -168,6 +196,7 @@ class GOESXrayRetriever(DataRetriever):
         :param save_directory: where all the files that are fetched for the first time should be saved
         """
         DataRetriever.__init__(self, database_path, save_directory)
+        self.name = 'xrs'
 
     def retrieve(self, start_time, end_time):
         """
@@ -184,7 +213,11 @@ class GOESXrayRetriever(DataRetriever):
         curve = self.get_from_file(start_time, end_time)
         if curve is None:  # if the local fetch failed, fetch from internet
             times = TimeRange(start_time, end_time)
-            curve = sunpy.lightcurve.GOESLightCurve.create(times).data
+            try:
+                curve = sunpy.lightcurve.GOESLightCurve.create(times).data
+            except:
+                curve = pd.DataFrame(columns=['xrsa', 'xrsb'])
+
             if self.save_directory:  # if saving files
                 save_name = os.path.join(self.save_directory, "goesxrs_{}_{}.csv".format(int(start_time.timestamp()),
                                                                                          int(end_time.timestamp())))
