@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from sklearn.linear_model import LinearRegression
 import numpy as np
+import math
 
 
 class Regressor(ABC):
@@ -11,13 +12,13 @@ class Regressor(ABC):
         pass
 
     @abstractmethod
-    def fit(self, X, Y):
+    def fit(self, X, y):
         """
         train the regressor
         :param X: set of sample inputs
         :type X: np.ndarray
-        :param Y: set of sample outputs
-        :type Y: np.ndarray
+        :param y: set of sample outputs
+        :type y: np.ndarray
         """
         pass
 
@@ -54,18 +55,18 @@ class LinearRegressor(Regressor):
         :type historical_window: int
         """
         Regressor.__init__(self)
-        self.model = None
+        self.model = LinearRegression()
         self.goes_k = historical_window
 
-    def fit(self, X, Y):
+    def fit(self, X, y):
         """
         train the regressor
         :param X: set of sample inputs
         :type X: np.ndarray
-        :param Y: set of sample outputs
-        :type Y: np.ndarray
+        :param y: set of sample outputs
+        :type y: np.ndarray
         """
-        self.model = LinearRegression().fit(X, Y)
+        self.model = self.model.fit(X, y)
 
     def predict(self, X):
         """
@@ -92,3 +93,9 @@ class LinearRegressor(Regressor):
             history = np.append(history[1:], forecast[-1])
         return np.array(forecast)
 
+    def rmse(self, true_values, predictions):
+        rmse = 0.0; n = len(true_values)
+        for i in range(n):
+            if not math.isnan(true_values[i]): rmse += (true_values[i] - predictions[i]) ** 2
+        rmse = math.sqrt(rmse/n)
+        return rmse
