@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression as skLinearRegression
+from sklearn.ensemble import RandomForestRegressor as skRandomForestRegressor
 import numpy as np
 import enum
 
@@ -177,3 +178,32 @@ class LinearRegressor(Regressor):
 
     def _fit_many_outputs(self, X, y):
         self.models.append(skLinearRegression().fit(X, y[:, :self.future_horizon]))
+
+
+class RandomForestRegressor(Regressor):
+    def __init__(self, mode, historic_horizon=15, future_horizon=15, n_estimators=100, criterion="mse",
+                 max_depth=None, min_samples_split=2, min_samples_leaf=1):
+        """
+
+        :param mode:
+        :param historic_horizon:
+        :param future_horizon:
+        """
+        Regressor.__init__(self, mode, historic_horizon=historic_horizon, future_horizon=future_horizon)
+
+        # save the forest parameters
+        self.forest_params = {'n_estimators': n_estimators,
+                              'criterion': criterion,
+                              'max_depth': max_depth,
+                              'min_samples_split': min_samples_split,
+                              'min_samples_leaf': min_samples_leaf}
+
+    def _fit_recursive(self, X, y):
+        self.models.append(skRandomForestRegressor(**self.forest_params).fit(X, y[:, 0]))
+
+    def _fit_many_models(self, X, y):
+        for i in range(self.future_horizon):
+            self.models.append(skRandomForestRegressor(**self.forest_params).fit(X, y[:, i]))
+
+    def _fit_many_outputs(self, X, y):
+        self.models.append(skRandomForestRegressor(**self.forest_params).fit(X, y[:, :self.future_horizon]))
