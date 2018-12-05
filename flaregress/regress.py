@@ -119,7 +119,21 @@ class Regressor(ABC):
 
 
 class BaselineRegressor(Regressor):
-    def __init__(self, mode, historic_horizon=15, future_horizon=15):
+    class Persistence:
+        def __init__(self):
+            pass
+
+        # make a persistence forecast
+        def predict(self, X):
+            if len(X.shape) == 1:
+                return X[-1]
+            else:
+                return np.stack([self.predict(x) for x in X])
+
+    """
+    A simple persistence forecaster
+    """
+    def __init__(self, historic_horizon=15, future_horizon=15):
         """
         initialize regressor
         :param historic_horizon: how many historical steps to use in predicting the future
@@ -127,16 +141,18 @@ class BaselineRegressor(Regressor):
         :param future_horizon: how many future steps to predict
         :type future_horizon: int
         """
-        Regressor.__init__(self, mode, historic_horizon=historic_horizon, future_horizon=future_horizon)
+        Regressor.__init__(self, RegressorMode.RecursiveModel,
+                           historic_horizon=historic_horizon, future_horizon=future_horizon)
+        self.models.append(self.Persistence())
 
     def _fit_recursive(self, X, y):
-        raise NotImplementedError()
+        pass
 
     def _fit_many_models(self, X, y):
-        raise NotADirectoryError()
+        pass
 
     def _fit_many_outputs(self, X, y):
-        raise NotImplementedError()
+        pass
 
 
 class LinearRegressor(Regressor):
