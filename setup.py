@@ -16,6 +16,7 @@ setup(
                       "pandas",
                       "sunpy",
                       "scikit-learn",
-                      "deepdish"],
+                      "deepdish",
+                      "statsmodels"],
     test_suite="tests"
 )
