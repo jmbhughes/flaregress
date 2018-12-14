@@ -13,7 +13,7 @@ class DataChunker:
         self.database = database.entries
         self.streams = streams
 
-    def chunk(self, test_stream='xrsa'):
+    def chunk(self, start_index, end_index, test_stream='xrsa'):
         """
         Divide data stream up into small flare sections
         :return: a pair of chunked inputs and outputs
@@ -22,14 +22,14 @@ class DataChunker:
 
         chunks = []
         test = []
-        for entry in self.database:
+        for entry in self.database[start_index: end_index]:
             for chunk_start_index in range(entry['xrs'].shape[0] - self.goes_k):
                 chunk = dict()
                 if 'f107' in self.streams:
                     if entry['f107'].values.shape[0] > 0:
                         chunk['f107'] = np.mean(entry['f107'].values)
                     else:
-                        chunk['f017'] = np.nan
+                        chunk['f107'] = np.nan
 
                 if 'meta' in self.streams:
                     chunk['time_start'] = entry['meta'].time_start.timestamp()
